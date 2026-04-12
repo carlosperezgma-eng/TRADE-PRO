@@ -1,0 +1,50 @@
+{
+  "entities": {
+    "Report": {
+      "title": "Report",
+      "description": "Un reporte de actividad en el punto de venta.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "type": "string", "enum": ["degustacion", "amarre", "valor_agregado", "muestreo"] },
+        "storeName": { "type": "string" },
+        "productName": { "type": "string" },
+        "quantity": { "type": "number" },
+        "notes": { "type": "string" },
+        "timestamp": { "type": "number" },
+        "userId": { "type": "string" },
+        "images": { "type": "array", "items": { "type": "string" } },
+        "location": {
+          "type": "object",
+          "properties": {
+            "latitude": { "type": "number" },
+            "longitude": { "type": "number" }
+          }
+        }
+      },
+      "required": ["type", "storeName", "productName", "timestamp", "userId"]
+    },
+    "User": {
+      "title": "User",
+      "description": "Información del usuario de trade marketing.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "user"] }
+      },
+      "required": ["uid", "email"]
+    }
+  },
+  "firestore": {
+    "/reports/{reportId}": {
+      "schema": "Report",
+      "description": "Colección global de reportes de campo."
+    },
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Perfiles de usuario."
+    }
+  }
+}
