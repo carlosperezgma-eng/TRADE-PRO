@@ -10,9 +10,13 @@
         "storeName": { "type": "string" },
         "productName": { "type": "string" },
         "quantity": { "type": "number" },
+        "peopleCount": { "type": "number" },
         "notes": { "type": "string" },
         "timestamp": { "type": "number" },
         "userId": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "userName": { "type": "string" },
+        "zone": { "type": "string" },
         "images": { "type": "array", "items": { "type": "string" } },
         "location": {
           "type": "object",

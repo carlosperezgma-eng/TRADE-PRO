@@ -50,6 +50,10 @@ service cloud.firestore {
              data.productName is string && data.productName.size() > 0 && data.productName.size() < 200 &&
              data.type in ['degustacion', 'amarre', 'valor_agregado', 'muestreo'] &&
              data.quantity is number &&
+             (!('zone' in data) || (data.zone is string && data.zone.size() < 100)) &&
+             (!('peopleCount' in data) || data.peopleCount is number) &&
+             (!('userEmail' in data) || (data.userEmail is string || data.userEmail == null)) &&
+             (!('userName' in data) || (data.userName is string || data.userName == null)) &&
              (!('notes' in data) || (data.notes is string && data.notes.size() < 1000)) &&
              (!('images' in data) || (data.images is list && data.images.size() <= 3));
     }

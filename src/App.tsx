@@ -63,6 +63,10 @@ import {
 import { 
   collection, 
   addDoc, 
+  getDoc,
+  getDocs,
+  deleteDoc,
+  writeBatch,
   query, 
   where, 
   onSnapshot, 
@@ -120,7 +124,10 @@ type Tab = 'dashboard' | 'reports' | 'history' | 'products';
 
 export default function App() {
   const [user, setUser] = useState<FirebaseUser | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [isAuthReady, setIsAuthReady] = useState(false);
+  const [isPurging, setIsPurging] = useState(false);
+  const [showPurgeConfirm, setShowPurgeConfirm] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
   const [reports, setReports] = useState<Report[]>([]);
   const [showReportForm, setShowReportForm] = useState<ReportType | null>(null);
@@ -141,13 +148,25 @@ export default function App() {
     async function testConnection() {
       try {
         console.log('Probando conexión a Firestore...');
+        // We use getDocFromServer to force a network request and bypass cache
         await getDocFromServer(doc(db, 'test', 'connection'));
-        console.log('Conexión a Firestore exitosa (o al menos alcanzable)');
-      } catch (error) {
+        console.log('Conexión a Firestore exitosa');
+      } catch (error: any) {
         console.error('Error al probar conexión a Firestore:', error);
-        if (error instanceof Error && error.message.includes('the client is offline')) {
-          console.error("Please check your Firebase configuration.");
-          toast.error('Parece que no hay conexión a la base de datos.');
+        
+        const isOffline = error?.message?.includes('the client is offline');
+        const isUnavailable = error?.code === 'unavailable' || error?.message?.includes('unavailable');
+        
+        if (isOffline || isUnavailable) {
+          console.error("Firestore connection issue detected.");
+          toast.error('Error de conexión con el servidor', {
+            description: 'No se pudo establecer comunicación con la base de datos. Por favor, verifica tu conexión a internet o intenta recargar la página.',
+            duration: 10000,
+            action: {
+              label: 'Reintentar',
+              onClick: () => window.location.reload()
+            }
+          });
         }
       }
     }
@@ -156,12 +175,65 @@ export default function App() {
 
   // Auth Listener
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
       setUser(user);
+      if (user) {
+        // Check if user is admin
+        const adminEmail = "carlosperezgma@gmail.com";
+        if (user.email === adminEmail && user.emailVerified) {
+          setIsAdmin(true);
+        } else {
+          try {
+            const userDoc = await getDoc(doc(db, 'users', user.uid));
+            if (userDoc.exists() && userDoc.data().role === 'admin') {
+              setIsAdmin(true);
+            } else {
+              setIsAdmin(false);
+            }
+          } catch (e) {
+            setIsAdmin(false);
+          }
+        }
+      } else {
+        setIsAdmin(false);
+      }
       setIsAuthReady(true);
     });
     return () => unsubscribe();
   }, []);
+
+  const purgeOldData = async () => {
+    if (!isAdmin) return;
+    setIsPurging(true);
+
+    try {
+      const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);
+      // Use Timestamp.fromMillis for correct comparison with Firestore Timestamp objects
+      const q = query(collection(db, 'reports'), where('timestamp', '<', Timestamp.fromMillis(thirtyDaysAgo)));
+      const snapshot = await getDocs(q);
+      
+      if (snapshot.empty) {
+        toast.info("No se encontraron datos antiguos para borrar.");
+        setIsPurging(false);
+        setShowPurgeConfirm(false);
+        return;
+      }
+
+      const batch = writeBatch(db);
+      snapshot.docs.forEach((doc) => {
+        batch.delete(doc.ref);
+      });
+      
+      await batch.commit();
+      toast.success(`Se han borrado ${snapshot.size} reportes antiguos.`);
+    } catch (error) {
+      console.error("Error al borrar datos antiguos:", error);
+      toast.error("Error al intentar borrar los datos.");
+    } finally {
+      setIsPurging(false);
+      setShowPurgeConfirm(false);
+    }
+  };
 
   // Update clock
   useEffect(() => {
@@ -176,11 +248,19 @@ export default function App() {
       return;
     }
 
-    const q = query(
-      collection(db, 'reports'),
-      where('userId', '==', user.uid),
-      orderBy('timestamp', 'desc')
-    );
+    let q;
+    if (isAdmin) {
+      q = query(
+        collection(db, 'reports'),
+        orderBy('timestamp', 'desc')
+      );
+    } else {
+      q = query(
+        collection(db, 'reports'),
+        where('userId', '==', user.uid),
+        orderBy('timestamp', 'desc')
+      );
+    }
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const fetchedReports: Report[] = [];
@@ -198,7 +278,7 @@ export default function App() {
     });
 
     return () => unsubscribe();
-  }, [user]);
+  }, [user, isAdmin]);
 
   const filteredReports = reports.filter(r => {
     const d = new Date(r.timestamp);
@@ -209,6 +289,7 @@ export default function App() {
 
   const stats: DashboardStats = {
     totalDegustaciones: filteredReports.filter(r => r.type === 'degustacion').reduce((acc, r) => acc + (Number(r.quantity) || 0), 0),
+    totalPeopleCount: filteredReports.filter(r => r.type === 'degustacion').reduce((acc, r) => acc + (Number(r.peopleCount) || 0), 0),
     totalAmarres: filteredReports.filter(r => r.type === 'amarre').length,
     totalMuestreos: filteredReports.filter(r => r.type === 'muestreo').reduce((acc, r) => acc + (Number(r.quantity) || 0), 0),
     totalValoresAgregados: filteredReports.filter(r => r.type === 'valor_agregado').length,
@@ -273,6 +354,8 @@ export default function App() {
       const finalReportData = {
         ...reportData,
         userId: user.uid,
+        userEmail: user.email,
+        userName: user.displayName,
         timestamp: serverTimestamp()
       };
       
@@ -423,6 +506,12 @@ export default function App() {
                     color="bg-brand-50"
                   />
                   <StatCard 
+                    title="Total Personas" 
+                    value={stats.totalPeopleCount} 
+                    icon={<Users className="w-5 h-5 text-blue-600" />}
+                    color="bg-blue-50"
+                  />
+                  <StatCard 
                     title="Amarres" 
                     value={stats.totalAmarres} 
                     icon={<Package className="w-5 h-5 text-orange-600" />}
@@ -445,7 +534,6 @@ export default function App() {
                     value={stats.storesVisited} 
                     icon={<Store className="w-5 h-5 text-slate-600" />}
                     color="bg-slate-50"
-                    className="col-span-2"
                   />
                 </div>
               </section>
@@ -689,7 +777,39 @@ export default function App() {
               className="space-y-6"
             >
               <div className="flex flex-col gap-4">
-                <h2 className="text-xl font-bold">Historial de Actividad</h2>
+                <div className="flex items-center justify-between">
+                  <h2 className="text-xl font-bold">Historial de Actividad</h2>
+                  {isAdmin && (
+                    <div className="relative">
+                      {!showPurgeConfirm ? (
+                        <button 
+                          onClick={() => setShowPurgeConfirm(true)}
+                          className="flex items-center gap-2 px-3 py-1.5 bg-red-50 text-red-600 rounded-lg text-[10px] font-bold uppercase tracking-wider hover:bg-red-100 transition-all"
+                        >
+                          <AlertCircle className="w-3 h-3" />
+                          Limpiar Antiguos
+                        </button>
+                      ) : (
+                        <div className="flex items-center gap-2 animate-in fade-in slide-in-from-right-2">
+                          <button 
+                            onClick={() => setShowPurgeConfirm(false)}
+                            className="px-3 py-1.5 bg-slate-100 text-slate-600 rounded-lg text-[10px] font-bold uppercase tracking-wider hover:bg-slate-200 transition-all"
+                          >
+                            Cancelar
+                          </button>
+                          <button 
+                            onClick={purgeOldData}
+                            disabled={isPurging}
+                            className="flex items-center gap-2 px-3 py-1.5 bg-red-600 text-white rounded-lg text-[10px] font-bold uppercase tracking-wider hover:bg-red-700 transition-all shadow-sm shadow-red-200 disabled:opacity-50"
+                          >
+                            {isPurging ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle2 className="w-3 h-3" />}
+                            Confirmar Borrado
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
                 <div className="relative">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
                   <input 
@@ -908,6 +1028,7 @@ function ReportForm({ type, prefilledProduct, onCancel, onSubmit }: { type: Repo
     storeName: '',
     productName: prefilledProduct || '',
     quantity: 1,
+    peopleCount: 0,
     notes: '',
     zone: '' as Zone | ''
   });
@@ -1210,6 +1331,7 @@ function ReportForm({ type, prefilledProduct, onCancel, onSubmit }: { type: Repo
                 setShowStoreSuggestions(true);
               }}
               onFocus={() => setShowStoreSuggestions(true)}
+              onBlur={() => setTimeout(() => setShowStoreSuggestions(false), 200)}
             />
           </div>
           {showStoreSuggestions && (
@@ -1219,7 +1341,8 @@ function ReportForm({ type, prefilledProduct, onCancel, onSubmit }: { type: Repo
                   key={i}
                   type="button"
                   className="w-full text-left px-5 py-3 text-sm hover:bg-brand-50 hover:text-brand-700 transition-colors border-b border-slate-50 last:border-0 font-medium"
-                  onClick={() => {
+                  onMouseDown={(e) => {
+                    e.preventDefault(); // Prevent blur before click
                     setFormData({...formData, storeName: s});
                     setStoreSearch(s);
                     setShowStoreSuggestions(false);
@@ -1251,6 +1374,7 @@ function ReportForm({ type, prefilledProduct, onCancel, onSubmit }: { type: Repo
                 setShowProductSuggestions(true);
               }}
               onFocus={() => setShowProductSuggestions(true)}
+              onBlur={() => setTimeout(() => setShowProductSuggestions(false), 200)}
             />
           </div>
           {showProductSuggestions && (
@@ -1260,7 +1384,8 @@ function ReportForm({ type, prefilledProduct, onCancel, onSubmit }: { type: Repo
                   key={i}
                   type="button"
                   className="w-full text-left px-5 py-3 text-sm hover:bg-brand-50 hover:text-brand-700 transition-colors border-b border-slate-50 last:border-0 font-medium"
-                  onClick={() => {
+                  onMouseDown={(e) => {
+                    e.preventDefault(); // Prevent blur before click
                     setFormData({...formData, productName: p});
                     setProductSearch(p);
                     setShowProductSuggestions(false);
@@ -1288,29 +1413,43 @@ function ReportForm({ type, prefilledProduct, onCancel, onSubmit }: { type: Repo
               onChange={e => setFormData({...formData, quantity: parseInt(e.target.value) || 0})}
             />
           </div>
-          <div className="space-y-2">
-            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] ml-1">Ubicación</label>
-            <button 
-              type="button"
-              onClick={handleCaptureLocation}
-              disabled={isCapturingLocation}
-              className={cn(
-                "w-full flex items-center justify-center gap-2 py-4 rounded-2xl border transition-all text-xs font-bold",
-                location 
-                  ? "bg-emerald-50 border-emerald-100 text-emerald-600" 
-                  : "bg-slate-50 border-slate-100 text-slate-500 hover:bg-slate-100"
-              )}
-            >
-              {isCapturingLocation ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : location ? (
-                <CheckCircle2 className="w-4 h-4" />
-              ) : (
-                <MapPin className="w-4 h-4" />
-              )}
-              {location ? 'Capturada' : isCapturingLocation ? 'Capturando...' : 'Capturar'}
-            </button>
-          </div>
+          {type === 'degustacion' && (
+            <div className="space-y-2">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] ml-1">Personas Degustaron</label>
+              <input 
+                type="number" 
+                required
+                min="0"
+                className="w-full px-5 py-4 bg-slate-50 border border-slate-100 rounded-2xl focus:outline-none focus:ring-4 focus:ring-brand-500/10 focus:border-brand-500 focus:bg-white transition-all text-sm font-bold"
+                value={formData.peopleCount || ''}
+                onChange={e => setFormData({...formData, peopleCount: parseInt(e.target.value) || 0})}
+              />
+            </div>
+          )}
+        </div>
+
+        <div className="space-y-2">
+          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] ml-1">Ubicación</label>
+          <button 
+            type="button"
+            onClick={handleCaptureLocation}
+            disabled={isCapturingLocation}
+            className={cn(
+              "w-full flex items-center justify-center gap-2 py-4 rounded-2xl border transition-all text-xs font-bold",
+              location 
+                ? "bg-emerald-50 border-emerald-100 text-emerald-600" 
+                : "bg-slate-50 border-slate-100 text-slate-500 hover:bg-slate-100"
+            )}
+          >
+            {isCapturingLocation ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : location ? (
+              <CheckCircle2 className="w-4 h-4" />
+            ) : (
+              <MapPin className="w-4 h-4" />
+            )}
+            {location ? 'Capturada' : isCapturingLocation ? 'Capturando...' : 'Capturar'}
+          </button>
         </div>
 
         <div className="space-y-1.5">
@@ -1409,7 +1548,22 @@ const HistoryItem: React.FC<{ report: Report }> = ({ report }) => {
             </span>
           </div>
           <h4 className="font-display font-bold text-slate-900 truncate text-lg leading-tight">{report.storeName}</h4>
-          <p className="text-xs text-slate-500 font-medium mt-1">{report.productName} • <span className="text-brand-600 font-bold">{report.quantity}</span> unidades</p>
+          <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1">
+            {report.zone && (
+              <p className="text-[10px] text-brand-600 font-bold uppercase tracking-wider flex items-center gap-1">
+                <MapPin className="w-2.5 h-2.5" /> {report.zone}
+              </p>
+            )}
+            {report.userName && (
+              <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Por: {report.userName}</p>
+            )}
+          </div>
+          <p className="text-xs text-slate-500 font-medium mt-1.5">
+            {report.productName} • <span className="text-brand-600 font-bold">{report.quantity}</span> unidades
+            {report.peopleCount !== undefined && report.peopleCount > 0 && (
+              <> • <span className="text-brand-600 font-bold">{report.peopleCount}</span> personas</>
+            )}
+          </p>
           {report.notes && (
             <p className="text-[11px] text-slate-400 italic mt-2 line-clamp-2 leading-relaxed">"{report.notes}"</p>
           )}

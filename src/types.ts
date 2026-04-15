@@ -20,7 +20,10 @@ export interface Report {
   notes: string;
   timestamp: number;
   userId: string;
+  userEmail?: string | null;
+  userName?: string | null;
   zone?: Zone;
+  peopleCount?: number;
   images?: string[];
   location?: {
     latitude: number;
@@ -30,6 +33,7 @@ export interface Report {
 
 export interface DashboardStats {
   totalDegustaciones: number;
+  totalPeopleCount: number;
   totalAmarres: number;
   totalMuestreos: number;
   totalValoresAgregados: number;
